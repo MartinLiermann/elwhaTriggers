@@ -1,0 +1,199 @@
+---
+title: "Models for developing a distribution trigger"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+workDir <- "C:/Users/Martin.Liermann/Documents/GitHub/elwhaTriggers"
+dat <- read.csv(paste(workDir,"/data/egData.csv",sep=""))
+```
+
+```{r warning=FALSE, message=FALSE}
+library(lme4)
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+```
+
+## Initial thoughts
+
+Just looking at the data, it seems like this trigger is particularly difficult. There is a lot of between watershed variability in redd distribution. Perhaps you could explain some of this variability with habitat metrics, but I suspect you will not explain much. And, to really do a good job of modeling the habitat effects you would need a lot of data (i.e dozens of basins). I would recommend starting with a very simple rule that can be developed based on simple calculations. For example, Find the distance (as a proportion of the accessible channel) for which 20% of the spawners are above for 50% of the years. 
+
+If you applied that rule to the mock data you provided, it looks like your basin specific values would be around 40%, 70%, and 90% for the Dungeness, Hoh and Queets respectively. So, based on this you might have a rule that says, we want 20% of the redds to be above 70% of the distance for at least one year. Of course this is combining between year and between basin variabiliy. It could be that the Elwha is more like the Queets, in which case we may rarely see those conditions. Note that in this case, the resolution of the data doesn't really allow us to make statements that are this precise (i.e. you would need a finer resolution for the distances).
+
+In any case, the between river differences are very important, and including river in any models would be important. But, I would completely decide on the model based on plots and first principles before starting the modeling process. That's because I don't think there is enought information in this type of data to let the data + model tell you what your model form should be.
+
+
+```{r warning=FALSE, message=FALSE, fig.width=6, fig.height=8}
+meanProp <- dat %>% group_by(River,Distance) %>% summarize(PropRedds=mean(PropRedds))
+
+ggplot(dat,aes(x=Distance,y=PropRedds,color=factor(Year))) +
+  geom_line() +
+  geom_line(data=meanProp,color="black",lwd=1.25) +
+  geom_hline(yintercept=0.8,lwd=1.2,col="orange") + 
+  facet_grid(River~.)
+```
+
+Plotting all of the data together.
+
+```{r warning=FALSE, message=FALSE}
+ggplot(dat,aes(x=Distance,y=PropRedds,color=factor(River))) +
+  geom_hline(yintercept=0.8,lwd=1.2,col="orange") + 
+  geom_point()
+```
+
+In order to make predictions about what the distribution should look like in the Elwha we would need to understand what the processes that are generating the distributions. This would allow us to properly interpret (model) the distributions in other reference watersheds and use those to say something about the Elwha.
+
+Here are a few hypotheses:
+
+1)  Ideal Free distribution: Every reach has a certain redd capacity and the fish distribute themselves in order to minimize density. 
+
+2)  Bottom up: Available habitat fills from the bottom up
+
+3)  Best to poor: Habitat is filled from highest to lowest quality.
+
+If 2 or 3 is the case you would expect the redd distribution to expand in years with more fish. 
+
+If 2 is the case you would expect the distribution to expand upstream in years with many spawners. You would also expect the lower reaches to have similar densities across years since they will be filled more consistantly. 
+
+If 3 is the case you would expect higher quality reaches to be filled more consistantly.
+
+If model 1 is true you would not expect to see the distribution change with abundance.
+
+Whether or not you include some metrics of habitat quality will depend on 2 things:
+
+1)  The degree to which habitat quality or redd capacity varies by km.
+
+2)  How well we can measure the important elements of habitat quality and predict redd density.
+
+
+If the spawning distribution is heavily dependent on abundance, then the trigger should probably take that into account. So, for example, if you are in a period of low ocean survival, your predicted distribution might be significantly different.
+
+## Models
+
+Here's a naive model that includes River as a random effect. With only 3 rivers this is a little questionable, but does account for the expected between river differences.
+
+```{r}
+m1 <- lmer(PropRedds ~ Distance + Elevation + MaxGrad + (1|River),data=dat)
+summary(m1)
+```
+
+You could also just includes river as fixed effect.
+
+```{r}
+m1 <- lm(PropRedds ~ Distance + Elevation + MaxGrad + River,data=dat)
+summary(m1)
+```
+
+Notice that for the mock data there's some weak evidence for an effect of distance. But this has to be true since we are modeling using the cummulative data.
+
+But, it probably doesn't make sense to model the cummulative redds. Instead, I would predict the number or proportion of redds within a reach. You could include distance upstream as a variable to account for the different filling hypotheses described above.
+
+```{r}
+# calculate the reach based metrics
+cDiff <- function(x) c(x[1],diff(x))
+cAvg <- function(x) c(x[1]/2,(x[-length(x)]+x[-1])/2)
+rDat <- dat %>% group_by(River,Year) %>%
+  mutate(distance=cAvg(Distance),
+         pRedds=cDiff(PropRedds),
+         elev=cAvg(Elevation),
+         grad=cAvg(MaxGrad),
+         redds=pRedds*TotRedds) %>%
+  filter(!is.na(distance)) %>%
+  select(river=River,year=Year,pRedds,distance,elev,grad,redds,totRedds=TotRedds)
+```
+
+Here's the data by reach.
+
+```{r warning=FALSE, message=FALSE}
+knitr::kable(rDat)
+```
+
+Here are some plots comparing distance upstream, maximum gradient and elevation to the the proportion of total redds within a reach.
+
+No consistent pattern with distance upstream. In fact these results would suggest a null model that says any reach (within the accessible/spawnable) river is equally likely to see spawners. This is not the case for a specific river where we see consistent patterns across years. But if we are trying to make predictions for a new river, I don't see any consistent pattern that could be applied generally.
+
+For distance, I used a linear smoother since the loess smoother gave poor results. The linear function fits the Dungeness and Hoh OK, but not the Queets.
+
+```{r warning=FALSE, message=FALSE}
+ggplot(rDat,aes(x=distance,y=pRedds,color=river)) +
+  geom_point() + geom_smooth(method="lm")
+```
+
+Same for elevation.
+
+```{r warning=FALSE, message=FALSE}
+ggplot(rDat,aes(x=elev,y=pRedds,color=river)) +
+  geom_point() + geom_smooth()
+```
+
+And again for maximum gradient.
+
+```{r warning=FALSE, message=FALSE}
+ggplot(rDat,aes(x=grad,y=pRedds,color=river)) +
+  geom_point() + geom_smooth()
+```
+
+So, overall, not many consistent patterns.
+
+You can do an analysis by reach, but I wouldn't have much confidence in any model based on this data. If you can't see a pattern, it's probably not something the model will find. And, if the model does suggest a relationship, I would be skeptical.
+
+Here, is one possible model.
+
+```{r}
+mDat <- rDat %>% group_by(river) %>% mutate(relRedds=totRedds/mean(totRedds)) 
+mDat$relGrad <- mDat$grad/mean(mDat$grad)
+mDat$relElev <- mDat$elev/mean(mDat$elev)
+
+m1 <- lm(pRedds ~ distance + relGrad + relElev + distance*relRedds,data=mDat)
+summary(m1)
+```
+
+I would probably see if it was possible to make a plot and table that would provide sufficient information to develop the trigger. If the complete data set has sufficient information to parameterize a model, then maybe fit a simple model.
+
+
+## Take away
+
+Unless we see strong relationships between habitat and redds, it will be difficult to build a statistical habitat based model. You could take a couple approaches.
+
+1)  Just stick with distance upstream. This is easy to implement and explain.
+
+2)  Use the literature or other sources to come up with spawning suitability index (e.g. intrinsic potential?), and then use distance upstream and this metric to predict redds. 
+
+You might look for evidence of the different hypotheses above. For example, see if the relationship between distance and the proportion of redds changes with the total redds.
+
+Here, for example, I've redone the plot of distance vs pRedds and sized the points based on the relative number of redds for that year and population. So, I just divided the number of redds in a year and population by the average number of redds for that populations (across years).
+
+```{r warning=FALSE, message=FALSE, fig.width=12,fig.height=5}
+rDat %>% group_by(river) %>% mutate(relRedds=totRedds/mean(totRedds)) %>%
+ggplot(aes(x=distance,y=pRedds,color=river,size=relRedds)) +
+  geom_point() + geom_smooth(method="lm") + facet_wrap(.~river)
+```
+
+Here it almost looks like the proportion of redds in the upper reaches goes down for years with more redds. This is kind of counter intuitive (the opposite of the fill from the bottom hypothesis.).
+
+## Conclusions
+
+So, again, I would use plots and tables to come up with a conceptual model and maybe even use the plots and tables to define the trigger.
+
+The between river variability will be very important and difficult to account for. You could, for example, end up in a situation where you use the "average" relationship between distance upstream and proportion of redds and the Elwha turns out to be a river that naturally has more fish towards the bottom. Then you would be waiting to see a higher proportion make it into the upper section to no avail.
+
+Also, you might also want to account for partial barriers?
+
+```{r eval=FALSE, include=FALSE}
+# Build the model
+knots <- quantile(train.data$lstat, p = c(0.25, 0.5, 0.75))
+model <- lm (medv ~ bs(lstat, knots = knots), data = train.data)
+# Make predictions
+predictions <- model %>% predict(test.data)
+# Model performance
+data.frame(
+  RMSE = RMSE(predictions, test.data$medv),
+  R2 = R2(predictions, test.data$medv)
+)
+```
+
