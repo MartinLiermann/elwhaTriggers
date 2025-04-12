@@ -1,0 +1,153 @@
+---
+title: "B-splines and P-splines"
+author: "Martin Liermann"
+format: html
+editor: visual
+---
+
+B-splines or (basis splines) are piece wise polynomial functions that can be expressed as a linear combination of basis functions, $B_{k,d}$'s.
+
+$$
+f(x) = \sum_{k=1}^N{\alpha_kB_{k,d}(x)}
+$$
+
+The $B_{k,d}$ functions can be any order, $d$, but are typically order 4, which corresponds to a 3rd degree polynomials (cubic, $d=4$). The basis function $B_{k,d}(x)$ is non-zero only between the knots $u_k$ and $u_{k+d}$ where the knots $u_1, u_2,…u_N$ are sequential values that subdivide the range of $x$ over which you would like to estimate $y$. Between $u_k$ and $u_{k+d}$, the $B_{k,d}$'s can be defined recursively as:
+
+$$
+B_{k,1}(x) = 1 \ \ \text {if} \ \ x \in (u_k,u_{k+1}] \ \ \text {else} \ \ 0
+$$
+
+$$
+B_{k,d}(x) = \frac {x-u_{k}}{u_{k+d-1}-u_{k}} B_{k,d-1}(x) + \frac {u_{k+d}-x}{u_{k+d}-u_{k+1}} B_{k+1,d-1}(x) \\
+$$
+
+These are known as the Cox-deBoor Equations. Notice that for a given set of $x$'s and specific order, $d$,you end up with a matrix, $B$ , with a row for each $x$ and a column for each knot, $u$.
+
+Here I implement the Cox-deBoor recursive relationship in R and plot the order 4 basis functions. Here I have explicitly reproduced the recursive equation above. The Cox-deBoor algorithm is a more efficient implementation.
+
+```{r}
+u <- (0:10)*10
+uN <- length(u)
+x <- seq(1,99,by=0.1)
+xN <- length(x)
+B <- array(NA,dim=c(xN,uN,4))
+for(d in 1:4){ # iterate over orders, d
+  for(k in 1:(uN-d)){ # iterate over knots, u[k]
+    for(j in 1:xN){ # iterate over x values, x[j]
+      if(d==1){
+        B[j,k,d] <- ifelse(x[j]<u[k] | x[j]>=u[k+1],0,1)
+      }else{
+        B[j,k,d] <- (x[j]-u[k])/(u[k+d-1]-u[k])   * B[j,k,d-1] +
+                    (u[k+d]-x[j])/(u[k+d]-u[k+1]) * B[j,k+1,d-1]
+      }
+    }
+  }
+}
+
+# plot the basis functions for order 4 (d=4, cubic)
+ymax <- max(B,na.rm=TRUE)
+plot(1,1,xlim=range(x),ylim=c(0,ymax),type="n",xlab="x",ylab="",bty="l")
+for(j in 1:uN){
+  lines(x,B[,j,4],col=j)
+}
+```
+
+The order 1 basis function for each knot, $k$, is 1 between $u_k$ and $u_{k+1}$ and 0 everywhere else.
+
+```{r}
+ymax <- max(B,na.rm=TRUE)
+plot(1,1,xlim=range(x),ylim=c(0,ymax),type="n",xlab="x",ylab="",bty="l")
+for(j in 1:uN){
+  lines(x,B[,j,1],col=j)
+}
+```
+
+The order 2 basis function is the triangular function (positive between $u_k$ and $u_{k+2}$).
+
+```{r}
+ymax <- max(B,na.rm=TRUE)
+plot(1,1,xlim=range(x),ylim=c(0,ymax),type="n",xlab="x",ylab="",bty="l")
+for(j in 1:uN){
+  lines(x,B[,j,2],col=j)
+}
+```
+
+The P-spline is a B-spline with a penalty.
+
+$$
+||y-f(x)||^2  + \lambda ||\alpha_i - \alpha_{i-1}||^2 = ||y-B\alpha||^2  + \lambda ||D\alpha||^2
+$$
+
+Here, the $D$ matrix is a first order differencing matrix.
+
+```{r}
+D <- matrix(0,ncol=4,nrow=4)
+D[1,1] <- 1
+for(i in 2:4){
+  D[i,i]<-1
+  D[i,i-1] <- -1
+}
+knitr::kable(D,format.args=list(trim=FALSE,width=4))
+```
+
+Using some linear algebra, you can find the $\alpha$ that minimizes the sum of the squared differences between the $y$ and $B\alpha$, given a penalty function.
+
+$$
+\hat {\alpha} = (B'B+\lambda D'D)^{-1}B'y
+$$
+
+So if I simulate some data, I can fit using different $\lambda$'s.
+
+```{r}
+x <- 1:99
+y <- 0.002*(x-50)^2+0.01*x + rnorm(99,0,1)
+plot(x,y,bty="l",pch=16)
+```
+
+Now I create a basis with knots that extend on either side of the data.
+
+```{r}
+u <- (0:40)*5-50
+uN <- length(u)
+x <- 1:99
+xN <- length(x)
+B <- array(NA,dim=c(xN,uN,4))
+for(d in 1:4){ # orders
+  for(k in 1:(uN-d)){ # iterate over knots
+    for(j in 1:xN){ # iterate over x values
+      if(d==1){
+        B[j,k,d] <- ifelse(x[j]<u[k] | x[j]>=u[k+1],0,1)
+      }else{
+        B[j,k,d] <- (x[j]-u[k])/(u[k+d-1]-u[k])   * B[j,k,d-1] +
+                    (u[k+d]-x[j])/(u[k+d]-u[k+1]) * B[j,k+1,d-1]
+      }
+    }
+  }
+}
+
+D <- matrix(0,ncol=uN-4,nrow=uN-4)
+D[1,1] <- 1
+for(i in 2:(uN-4)){
+  D[i,i]<-1
+  D[i,i-1] <- -1
+}
+BB <- B[,1:(uN-4),4]
+```
+
+And plot the data and P-spline with different penalties. It looks like a penalty of around 3 works best for this problem.
+
+```{r}
+plot(x,y,bty="l",pch=16,col=rgb(0,0,0,0.2))
+pp <- c(1,3,10,100)
+for(i in 1:4){
+  zz <- solve(t(BB)%*%BB + pp[i]*t(D)%*%D) %*% t(BB) %*% y
+  yPred <- BB %*% zz
+  lines(x,yPred,col=i,lwd=2)
+}
+legend("bottomright",pch=16,col=1:4,legend=paste(pp))
+```
+
+Next I could:
+
+-   Look at how best to expand on either side, natural splines, etc..
+-   Use cross-validation to find the penalty
